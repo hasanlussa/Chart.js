@@ -93,7 +93,6 @@ function buildTask() {
     .pipe(gulp.dest(outDir));
 
   var nonBundled = browserify('./src/chart.js', { standalone: 'Chart' })
-    .ignore('moment')
     .plugin(collapse)
     .bundle()
     .pipe(source('Chart.js'))
@@ -170,7 +169,6 @@ function startTest() {
   return [
     {pattern: './test/fixtures/**/*.json', included: false},
     {pattern: './test/fixtures/**/*.png', included: false},
-    './node_modules/moment/min/moment.min.js',
     './test/jasmine.index.js',
     './src/**/*.js',
   ].concat(

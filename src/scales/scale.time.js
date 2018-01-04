@@ -1,8 +1,8 @@
 /* global window: false */
 'use strict';
 
-var moment = require('moment');
-moment = typeof moment === 'function' ? moment : window.moment;
+var dateFns = require('date-fns');
+dateFns = typeof dateFns.toDate === 'function' ? dateFns : window.dateFns;
 
 var defaults = require('../core/core.defaults');
 var helpers = require('../helpers/index');
@@ -59,6 +59,35 @@ var INTERVALS = {
 };
 
 var UNITS = Object.keys(INTERVALS);
+
+function getDateFNSUnitFunction(fx, unit, plural) {
+	var hasISO = (/^iso/i).test(unit);
+	if (hasISO) {
+		unit = unit.substr(3);
+	}
+	var capUnit = unit.charAt(0).toUpperCase() + unit.slice(1);
+	var functionName = fx + (hasISO ? 'ISO' : '') +
+		capUnit + (plural ? 's' : '');
+	if (typeof dateFns[functionName] === 'function') {
+		return dateFns[functionName];
+	}
+}
+
+function getStartOf(value, unit) {
+	return getDateFNSUnitFunction('startOf', unit)(value);
+}
+
+function getEndOf(value, unit) {
+	return getDateFNSUnitFunction('endOf', unit)(value);
+}
+
+function getDurations(min, max, unit) {
+	return getDateFNSUnitFunction('differenceIn', unit, true)(min, max);
+}
+
+function addTime(date, amount, unit) {
+	return getDateFNSUnitFunction('add', unit, true)(date, amount);
+}
 
 function sorter(a, b) {
 	return a - b;
@@ -178,10 +207,10 @@ function interpolate(table, skey, sval, tkey) {
 }
 
 /**
- * Convert the given value to a moment object using the given time options.
- * @see http://momentjs.com/docs/#/parsing/
+ * Convert the given value to a javascript date object using the given time options.
+ * @see https://date-fns.org/v2.0.0-alpha.7/docs/parse
  */
-function momentify(value, options) {
+function parseDate(value, options) {
 	var parser = options.parser;
 	var format = options.parser || options.format;
 
@@ -190,18 +219,20 @@ function momentify(value, options) {
 	}
 
 	if (typeof value === 'string' && typeof format === 'string') {
-		return moment(value, format);
+		return dateFns.parse(value, format, new Date());
 	}
 
-	if (!(value instanceof moment)) {
-		value = moment(value);
+	if (!(value instanceof Date)) {
+		value = dateFns.toDate(value);
 	}
 
-	if (value.isValid()) {
+	// invalid date still instance of Date
+	// duck-tape using getMonth method
+	if (dateFns.isValid(value)) {
 		return value;
 	}
 
-	// Labels are in an incompatible moment format and no `parser` has been provided.
+	// Labels are in an incompatible date-fns format and no `parser` has been provided.
 	// The user might still use the deprecated `format` option to convert his inputs.
 	if (typeof format === 'function') {
 		return format(value);
@@ -216,16 +247,16 @@ function parse(input, scale) {
 	}
 
 	var options = scale.options.time;
-	var value = momentify(scale.getRightValue(input), options);
-	if (!value.isValid()) {
+	var value = parseDate(scale.getRightValue(input), options);
+	if (!dateFns.isValid(value)) {
 		return null;
 	}
 
 	if (options.round) {
-		value.startOf(options.round);
+		value = getStartOf(value, options.round);
 	}
 
-	return value.valueOf();
+	return dateFns.getTime(value);
 }
 
 /**
@@ -276,13 +307,15 @@ function determineUnitForAutoTicks(minUnit, min, max, capacity) {
  * Figures out what unit to format a set of ticks with
  */
 function determineUnitForFormatting(ticks, minUnit, min, max) {
-	var duration = moment.duration(moment(max).diff(moment(min)));
 	var ilen = UNITS.length;
 	var i, unit;
 
 	for (i = ilen - 1; i >= UNITS.indexOf(minUnit); i--) {
 		unit = UNITS[i];
-		if (INTERVALS[unit].common && duration.as(unit) >= ticks.length) {
+		if (
+			INTERVALS[unit].common &&
+			getDurations(min, max, unit) >= ticks.length
+		) {
 			return unit;
 		}
 	}
@@ -312,8 +345,8 @@ function generate(min, max, capacity, options) {
 	var weekday = minor === 'week' ? timeOpts.isoWeekday : false;
 	var majorTicksEnabled = options.ticks.major.enabled;
 	var interval = INTERVALS[minor];
-	var first = moment(min);
-	var last = moment(max);
+	var first = parseDate(min);
+	var last = parseDate(max);
 	var ticks = [];
 	var time;
 
@@ -323,30 +356,30 @@ function generate(min, max, capacity, options) {
 
 	// For 'week' unit, handle the first day of week option
 	if (weekday) {
-		first = first.isoWeekday(weekday);
-		last = last.isoWeekday(weekday);
+		first = dateFns.setISODay(first, weekday);
+		last = dateFns.setISODay(last, weekday);
 	}
 
 	// Align first/last ticks on unit
-	first = first.startOf(weekday ? 'day' : minor);
-	last = last.startOf(weekday ? 'day' : minor);
+	first = getStartOf(first, weekday ? 'day' : minor);
+	last = getStartOf(last, weekday ? 'day' : minor);
 
 	// Make sure that the last tick include max
 	if (last < max) {
-		last.add(1, minor);
+		last = addTime(last, 1, minor);
 	}
 
-	time = moment(first);
+	time = parseDate(first);
 
 	if (majorTicksEnabled && major && !weekday && !timeOpts.round) {
 		// Align the first tick on the previous `minor` unit aligned on the `major` unit:
 		// we first aligned time on the previous `major` unit then add the number of full
 		// stepSize there is between first and the previous major time.
-		time.startOf(major);
-		time.add(~~((first - time) / (interval.size * stepSize)) * stepSize, minor);
+		time = getStartOf(time, major);
+		time = addTime(time, ~~((first - time) / (interval.size * stepSize)) * stepSize, minor);
 	}
 
-	for (; time < last; time.add(stepSize, minor)) {
+	for (; time < last; time = addTime(time, stepSize, minor)) {
 		ticks.push(+time);
 	}
 
@@ -392,7 +425,7 @@ function ticksFromTimestamps(values, majorUnit) {
 
 	for (i = 0, ilen = values.length; i < ilen; ++i) {
 		value = values[i];
-		major = majorUnit ? value === +moment(value).startOf(majorUnit) : false;
+		major = majorUnit ? value === +getStartOf(parseDate(value), majorUnit) : false;
 
 		ticks.push({
 			value: value,
@@ -427,15 +460,15 @@ module.exports = function(Chart) {
 		bounds: 'data',
 
 		time: {
-			parser: false, // false == a pattern string from http://momentjs.com/docs/#/parsing/string-format/ or a custom callback that converts its argument to a moment
-			format: false, // DEPRECATED false == date objects, moment object, callback or a pattern string from http://momentjs.com/docs/#/parsing/string-format/
+			parser: false, // false == a pattern string
+			format: false, // DEPRECATED false == date objects
 			unit: false, // false == automatic or override with week, month, year, etc.
 			round: false, // none, or override with week, month, year, etc.
 			displayFormat: false, // DEPRECATED
 			isoWeekday: false, // override week start day - see http://momentjs.com/docs/#/get-set/iso-weekday/
 			minUnit: 'millisecond',
 
-			// defaults to unit's corresponding unitFormat below or override using pattern string from http://momentjs.com/docs/#/displaying/format/
+			// defaults to unit's corresponding unitFormat below or override using pattern string from https://date-fns.org/v2.0.0-alpha.7/docs/format
 			displayFormats: {
 				millisecond: 'h:mm:ss.SSS a', // 11:20:01.123 AM,
 				second: 'h:mm:ss a', // 11:20:01 AM
@@ -469,8 +502,8 @@ module.exports = function(Chart) {
 
 	var TimeScale = Chart.Scale.extend({
 		initialize: function() {
-			if (!moment) {
-				throw new Error('Chart.js - Moment.js could not be found! You must include it before Chart.js to use the time scale. Download at https://momentjs.com');
+			if (!dateFns) {
+				throw new Error('date-fns - Date FNS could not be found! You must include it before Chart.js to use the time scale. Download at https://date-fns.org/');
 			}
 
 			this.mergeTicksOptions();
@@ -557,8 +590,8 @@ module.exports = function(Chart) {
 			max = parse(timeOpts.max, me) || max;
 
 			// In case there is no valid min/max, set limits based on unit time option
-			min = min === MAX_INTEGER ? +moment().startOf(unit) : min;
-			max = max === MIN_INTEGER ? +moment().endOf(unit) + 1 : max;
+			min = min === MAX_INTEGER ? +getStartOf(new Date(), unit) : min;
+			max = max === MIN_INTEGER ? +getEndOf(new Date(), unit) + 1 : max;
 
 			// Make sure that max is strictly higher than min (required by the lookup table)
 			me.min = Math.min(min, max);
@@ -636,7 +669,7 @@ module.exports = function(Chart) {
 				label = me.getRightValue(value);
 			}
 			if (timeOpts.tooltipFormat) {
-				label = momentify(label, timeOpts).format(timeOpts.tooltipFormat);
+				label = dateFns.format(parseDate(label, timeOpts), timeOpts.tooltipFormat);
 			}
 
 			return label;
@@ -649,15 +682,15 @@ module.exports = function(Chart) {
 		tickFormatFunction: function(tick, index, ticks, formatOverride) {
 			var me = this;
 			var options = me.options;
-			var time = tick.valueOf();
+			var time = dateFns.getTime(tick);
 			var formats = options.time.displayFormats;
 			var minorFormat = formats[me._unit];
 			var majorUnit = me._majorUnit;
 			var majorFormat = formats[majorUnit];
-			var majorTime = tick.clone().startOf(majorUnit).valueOf();
+			var majorTime = dateFns.getTime(getStartOf(tick, majorUnit));
 			var majorTickOpts = options.ticks.major;
 			var major = majorTickOpts.enabled && majorUnit && majorFormat && time === majorTime;
-			var label = tick.format(formatOverride ? formatOverride : major ? majorFormat : minorFormat);
+			var label = dateFns.format(tick, formatOverride ? formatOverride : major ? majorFormat : minorFormat);
 			var tickOpts = major ? majorTickOpts : options.ticks.minor;
 			var formatter = helpers.valueOrDefault(tickOpts.callback, tickOpts.userCallback);
 
@@ -669,7 +702,7 @@ module.exports = function(Chart) {
 			var i, ilen;
 
 			for (i = 0, ilen = ticks.length; i < ilen; ++i) {
-				labels.push(this.tickFormatFunction(moment(ticks[i].value), i, ticks));
+				labels.push(this.tickFormatFunction(parseDate(ticks[i].value), i, ticks));
 			}
 
 			return labels;
@@ -718,7 +751,7 @@ module.exports = function(Chart) {
 			var pos = (size ? (pixel - start) / size : 0) * (me._offsets.left + 1 + me._offsets.left) - me._offsets.right;
 			var time = interpolate(me._table, 'pos', pos, 'time');
 
-			return moment(time);
+			return parseDate(time);
 		},
 
 		/**
@@ -745,7 +778,7 @@ module.exports = function(Chart) {
 
 			var formatOverride = me.options.time.displayFormats.millisecond;	// Pick the longest format for guestimation
 
-			var exampleLabel = me.tickFormatFunction(moment(exampleTime), 0, [], formatOverride);
+			var exampleLabel = me.tickFormatFunction(parseDate(exampleTime), 0, [], formatOverride);
 			var tickLabelWidth = me.getLabelWidth(exampleLabel);
 			var innerWidth = me.isHorizontal() ? me.width : me.height;
 
